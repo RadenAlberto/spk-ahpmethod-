@@ -2,444 +2,145 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import io
 
-# ==========================================
-# PAGE CONFIGURATION & ENTERPRISE STYLING
-# ==========================================
-st.set_page_config(
-    page_title="SPK AHP — PT Pertamina Pertagas Niaga",
-    page_icon="⛽",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- CONFIG & TEMA ---
+st.set_page_config(page_title="AHP Pertagas Niaga", layout="wide")
 
-# Custom Corporate CSS (Pertamina Theme: Blue, Red, Clean Grey)
+# Styling dikit biar gak kaku
 st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-    
-    * {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-    }
-    
-    .main-header {
-        background: linear-gradient(135deg, #0A2540 0%, #1A365D 50%, #005691 100%);
-        padding: 24px 30px;
-        border-radius: 14px;
-        color: white;
-        margin-bottom: 25px;
-        box-shadow: 0 10px 25px -5px rgba(10, 37, 64, 0.2);
-    }
-    
-    .metric-card {
-        background: #FFFFFF;
-        padding: 18px 20px;
-        border-radius: 12px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        text-align: center;
-    }
-    
-    .badge-consistent {
-        background-color: #DEF7EC;
-        color: #03543F;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.88rem;
-        display: inline-block;
-        border: 1px solid #84E1BC;
-    }
-    
-    .badge-inconsistent {
-        background-color: #FDE8E8;
-        color: #9B1C1C;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.88rem;
-        display: inline-block;
-        border: 1px solid #F8B4B4;
-    }
-
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
-
-    .stTabs [data-baseweb="tab"] {
-        padding: 10px 20px;
-        border-radius: 8px;
-        font-weight: 600;
-    }
-</style>
+    <style>
+    .stApp { background-color: #f8f9fa; }
+    .main-card { background: white; padding: 2rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+    h1, h2, h3 { color: #1e293b; }
+    </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# SAATY CONSTANTS & MATH FUNCTIONS
-# ==========================================
-RI_TABLE = {1: 0.00, 2: 0.00, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32, 8: 1.41, 9: 1.45, 10: 1.49}
+# --- LOGIKA MATEMATIKA AHP ---
+RI = {1: 0, 2: 0, 3: 0.58, 4: 0.90, 5: 1.12, 6: 1.24, 7: 1.32, 8: 1.41}
 
-SAATY_SCALE = {
-    1: "1 - Sama Penting (Equal)",
-    2: "2 - Sedikit Mendekati Lebih Penting",
-    3: "3 - Sedikit Lebih Penting (Moderate)",
-    4: "4 - Mendekati Jelas Lebih Penting",
-    5: "5 - Jelas Lebih Penting (Strong)",
-    6: "6 - Mendekati Sangat Jelas Lebih Penting",
-    7: "7 - Sangat Jelas Lebih Penting (Very Strong)",
-    8: "8 - Mendekati Mutlak Lebih Penting",
-    9: "9 - Mutlak Lebih Penting (Extreme)"
-}
-
-def calculate_ahp(matrix):
-    """
-    Hitung Bobot Prioritas, Lambda Max, CI, dan CR
-    """
-    n = matrix.shape[0]
+def get_weights(matrix):
     col_sum = matrix.sum(axis=0)
-    col_sum_safe = np.where(col_sum == 0, 1e-10, col_sum)
-    norm_matrix = matrix / col_sum_safe
+    norm_matrix = matrix / col_sum
     weights = norm_matrix.mean(axis=1)
     
-    # Weighted Sum Vector (WSV)
-    wsv = matrix @ weights
-    # Consistency Vector (CV)
-    cv = wsv / np.where(weights == 0, 1e-10, weights)
-    lambda_max = float(np.mean(cv))
+    # Hitung Konsistensi
+    n = len(matrix)
+    if n <= 2:
+        return weights, 0.0
     
-    ci = (lambda_max - n) / (n - 1) if n > 2 else 0.0
-    ri = RI_TABLE.get(n, 1.49)
-    cr = (ci / ri) if (ri > 0 and n > 2) else 0.0
-    
-    return {
-        "matrix": matrix,
-        "norm_matrix": norm_matrix,
-        "weights": weights,
-        "lambda_max": lambda_max,
-        "ci": ci,
-        "cr": cr,
-        "is_consistent": cr <= 0.10
-    }
+    lampda_max = np.mean((matrix @ weights) / weights)
+    ci = (lampda_max - n) / (n - 1)
+    cr = ci / RI[n]
+    return weights, cr
 
-def render_pairwise_form(items, group_key, default_matrix=None):
-    """
-    UI Form Interaktif Skala Saaty (User Friendly tanpa input desimal 0.111)
-    """
-    n = len(items)
-    matrix = np.ones((n, n), dtype=float)
-    
-    if default_matrix is not None and default_matrix.shape == (n, n):
-        matrix = default_matrix.copy()
-
-    with st.expander(f"📝 Formulir Perbandingan Berpasangan ({len(items)} Entitas)", expanded=True):
-        st.caption("Pilih item mana yang lebih dominan/penting beserta tingkat kepentingannya berdasarkan Skala Saaty (1-9):")
-        
-        for i in range(n):
-            for j in range(i + 1, n):
-                item_a = items[i]
-                item_b = items[j]
-                
-                c1, c2 = st.columns([1, 2])
-                with c1:
-                    pref = st.radio(
-                        f"Dominansi #{i+1}-{j+1}:",
-                        options=[item_a, item_b],
-                        horizontal=True,
-                        key=f"pref_{group_key}_{i}_{j}"
-                    )
-                with c2:
-                    val = st.select_slider(
-                        f"Tingkat Kepentingan:",
-                        options=list(SAATY_SCALE.keys()),
-                        format_func=lambda x: SAATY_SCALE[x],
-                        value=1,
-                        key=f"scale_{group_key}_{i}_{j}"
-                    )
-                
-                if pref == item_a:
-                    matrix[i, j] = float(val)
-                    matrix[j, i] = 1.0 / float(val)
-                else:
-                    matrix[i, j] = 1.0 / float(val)
-                    matrix[j, i] = float(val)
-                st.divider()
-                
-    return matrix
-
-# ==========================================
-# SIDEBAR CONFIGURATION
-# ==========================================
+# --- SIDEBAR (Input Data) ---
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Pertamina_Logo.svg/2560px-Pertamina_Logo.svg.png", width=180)
-    st.markdown("### ⚙️ Pengaturan Evaluasi")
+    st.header("📋 Input Data")
+    input_crit = st.text_area("Kriteria (Pisahkan dengan koma):", 
+                             "Harga, Kualitas, Layanan, Reputasi")
+    input_vend = st.text_area("Vendor (Pisahkan dengan koma):", 
+                             "PT PMS, Vendor B, Vendor C")
     
-    # Input Kriteria
-    default_criteria = "Cost (Harga Sewa), Quality (Kondisi Armada), Service (Kecepatan Layanan), Reputation (Track Record)"
-    raw_criteria = st.text_area("Daftar Kriteria (Pisahkan dengan koma):", default_criteria, height=90)
-    criteria_list = [c.strip() for c in raw_criteria.split(",") if c.strip()]
+    criteria = [x.strip() for x in input_crit.split(",") if x.strip()]
+    vendors = [x.strip() for x in input_vend.split(",") if x.strip()]
     
-    # Input Alternatif
-    default_vendors = "PT PMS, Vendor B, Vendor C, Vendor D"
-    raw_vendors = st.text_area("Daftar Vendor/Alternatif (Pisahkan dengan koma):", default_vendors, height=90)
-    vendor_list = [v.strip() for v in raw_vendors.split(",") if v.strip()]
+    st.divider()
+    st.info("Cara Pakai: Isi kriteria/vendor di atas, lalu atur perbandingan di tab yang muncul.")
 
-    st.markdown("---")
-    st.info("💡 **AHP Rule:** Pastikan rasio konsistensi $CR \\le 10\\%$ (0.10) agar keputusan valid.")
+# --- MAIN APP ---
+st.title("⛽ SPK Pemilihan Vendor")
+st.caption("Aplikasi perhitungan AHP untuk PT Pertamina Pertagas Niaga")
 
-# ==========================================
-# MAIN HEADER
-# ==========================================
-st.markdown(f"""
-<div class="main-header">
-    <div style="font-size: 0.85rem; font-weight: 700; letter-spacing: 1.5px; opacity: 0.8; text-transform: uppercase;">
-        Sistem Pendukung Keputusan (SPK)
-    </div>
-    <div style="font-size: 1.9rem; font-weight: 800; margin: 4px 0;">
-        Analytical Hierarchy Process (AHP)
-    </div>
-    <div style="font-size: 1rem; opacity: 0.9;">
-        Studi Kasus: Pemilihan Vendor Kendaraan Operasional — PT Pertamina Pertagas Niaga
-    </div>
-</div>
-""", unsafe_allow_html=True)
+if len(criteria) < 2 or len(vendors) < 2:
+    st.warning("Tambahkan minimal 2 kriteria dan 2 vendor di sidebar.")
+    st.stop()
 
-# Tabs Workflow
-tab1, tab2, tab3, tab4 = st.tabs([
-    "1️⃣ Bobot Kriteria", 
-    "2️⃣ Evaluasi Vendor", 
-    "🏆 Hasil Akhir & Rekomendasi", 
-    "🔬 Analisis Sensitivitas"
-])
+tabs = st.tabs(["1. Bobot Kriteria", "2. Perbandingan Vendor", "3. Hasil Akhir"])
 
-# ==========================================
-# TAB 1: BOBOT KRITERIA
-# ==========================================
-with tab1:
-    st.markdown("### 🎯 Langkah 1: Perbandingan Berpasangan Antar-Kriteria")
+# --- TAB 1: KRITERIA ---
+with tabs[0]:
+    st.subheader("Seberapa penting kriteria ini dibanding yang lain?")
+    n = len(criteria)
+    c_matrix = np.ones((n, n))
     
-    if len(criteria_list) < 2:
-        st.error("Minimal harus ada 2 kriteria untuk perbandingan AHP.")
-    else:
-        crit_matrix = render_pairwise_form(criteria_list, "criteria")
-        crit_res = calculate_ahp(crit_matrix)
-        
-        # Display Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("λ Max (Eigenvalue)", f"{crit_res['lambda_max']:.4f}")
-        with col2:
-            st.metric("CI (Consistency Index)", f"{crit_res['ci']:.4f}")
-        with col3:
-            st.metric("CR (Consistency Ratio)", f"{(crit_res['cr']*100):.2f}%")
-        with col4:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if crit_res['is_consistent']:
-                st.markdown('<span class="badge-consistent">✅ KONSISTEN (CR ≤ 10%)</span>', unsafe_allow_html=True)
-            else:
-                st.markdown('<span class="badge-inconsistent">⚠️ TIDAK KONSISTEN (CR > 10%)</span>', unsafe_allow_html=True)
-
-        col_left, col_right = st.columns([1, 1])
-        
-        with col_left:
-            st.markdown("#### Matriks Perbandingan Kriteria")
-            st.dataframe(pd.DataFrame(crit_matrix, index=criteria_list, columns=criteria_list).style.format("{:.3f}"), use_container_width=True)
-            
-            with st.expander("Lihat Matriks Normalisasi"):
-                st.dataframe(pd.DataFrame(crit_res["norm_matrix"], index=criteria_list, columns=criteria_list).style.format("{:.4f}"), use_container_width=True)
-
-        with col_right:
-            st.markdown("#### Distribusi Bobot Prioritas Kriteria")
-            df_crit_weights = pd.DataFrame({
-                "Kriteria": criteria_list,
-                "Bobot": crit_res["weights"],
-                "Persentase": crit_res["weights"] * 100
-            }).sort_values(by="Bobot", ascending=True)
-            
-            fig_pie = px.pie(
-                df_crit_weights, 
-                names="Kriteria", 
-                values="Bobot", 
-                hole=0.45,
-                color_discrete_sequence=px.colors.sequential.Blues_r
-            )
-            fig_pie.update_traces(textinfo='percent+label', pull=[0.05]*len(criteria_list))
-            fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=300)
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-# ==========================================
-# TAB 2: EVALUASI ALTERNATIF / VENDOR
-# ==========================================
-vendor_weights_per_criteria = {}
-all_vendors_consistent = True
-
-with tab2:
-    st.markdown("### 🏢 Langkah 2: Perbandingan Alternatif Vendor per Kriteria")
-    st.caption("Nilai keunggulan masing-masing vendor ditinjau dari tiap kriteria yang ada.")
-    
-    if len(vendor_list) < 2:
-        st.error("Minimal harus ada 2 vendor/alternatif untuk perbandingan.")
-    else:
-        v_tabs = st.tabs([f"📌 {crit}" for crit in criteria_list])
-        
-        for idx, crit in enumerate(criteria_list):
-            with v_tabs[idx]:
-                st.markdown(f"#### Perbandingan Vendor Berdasarkan: **{crit}**")
-                v_matrix = render_pairwise_form(vendor_list, f"vendor_{idx}")
-                v_res = calculate_ahp(v_matrix)
-                vendor_weights_per_criteria[crit] = v_res["weights"]
-                
-                c1, c2, c3 = st.columns([1, 1, 2])
-                with c1:
-                    st.metric("CR Kriteria Ini", f"{(v_res['cr']*100):.2f}%")
-                with c2:
-                    if v_res['is_consistent']:
-                        st.markdown('<br><span class="badge-consistent">✅ Konsisten</span>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<br><span class="badge-inconsistent">⚠️ Tidak Konsisten</span>', unsafe_allow_html=True)
-                        all_vendors_consistent = False
-                with c3:
-                    df_v = pd.DataFrame({
-                        "Vendor": vendor_list,
-                        "Skor Lokal": v_res["weights"],
-                        "Persentase": v_res["weights"] * 100
-                    }).sort_values(by="Skor Lokal", ascending=False)
-                    st.dataframe(df_v.style.format({"Skor Lokal": "{:.4f}", "Persentase": "{:.2f}%"}), use_container_width=True)
-
-# ==========================================
-# TAB 3: HASIL AKHIR & REKOMENDASI
-# ==========================================
-with tab3:
-    st.markdown("### 🏆 Hasil Akhir Sintesis & Rekomendasi Keputusan")
-    
-    if len(vendor_weights_per_criteria) == len(criteria_list):
-        # Matriks Alternatif (m x n)
-        W_A = np.column_stack([vendor_weights_per_criteria[c] for c in criteria_list])
-        W_C = crit_res["weights"]
-        
-        # Skor Akhir Global: W_A * W_C
-        final_scores = W_A @ W_C
-        
-        df_final = pd.DataFrame({
-            "Vendor": vendor_list,
-            "Nilai Preferensi Global": final_scores,
-            "Persentase": final_scores * 100
-        }).sort_values(by="Nilai Preferensi Global", ascending=False).reset_index(drop=True)
-        df_final["Peringkat"] = [f"Peringkat {i+1}" for i in range(len(df_final))]
-        
-        best_vendor = df_final.iloc[0]["Vendor"]
-        best_score = df_final.iloc[0]["Nilai Preferensi Global"]
-
-        # Alert Box Juara
-        st.success(f"""
-        ### 🌟 Rekomendasi Utama: **{best_vendor}**
-        Berdasarkan perhitungan multi-kriteria AHP, **{best_vendor}** menempati prioritas tertinggi dengan skor preferensi akhir **{best_score:.4f}** ({best_score*100:.2f}%).
-        """)
-        
-        col_rank1, col_rank2 = st.columns([1, 1])
-        
-        with col_rank1:
-            st.markdown("#### Tabel Peringkat Akhir")
-            st.dataframe(
-                df_final[["Peringkat", "Vendor", "Nilai Preferensi Global", "Persentase"]].style
-                .format({"Nilai Preferensi Global": "{:.4f}", "Persentase": "{:.2f}%"})
-                .background_gradient(subset=["Nilai Preferensi Global"], cmap="Blues"),
-                use_container_width=True
-            )
-            
-            # Export to Excel
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Hasil_AHP')
-            
-            st.download_button(
-                label="📥 Unduh Laporan Rekapitulasi (Excel)",
-                data=buffer.getvalue(),
-                file_name="Laporan_AHP_Pertamina_Pertagas_Niaga.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        with col_rank2:
-            st.markdown("#### Visualisasi Komparasi Nilai Akhir")
-            fig_bar = px.bar(
-                df_final.sort_values(by="Nilai Preferensi Global", ascending=True),
-                x="Nilai Preferensi Global",
-                y="Vendor",
-                orientation='h',
-                text_auto='.4f',
-                color="Nilai Preferensi Global",
-                color_continuous_scale="Teal"
-            )
-            fig_bar.update_layout(height=320, margin=dict(t=20, b=20, l=20, r=20))
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        # Matriks Kontribusi Tiap Kriteria ke Tiap Vendor
-        st.markdown("---")
-        st.markdown("#### 📊 Profil Radar Kontribusi Vendor per Kriteria")
-        
-        fig_radar = go.Figure()
-        for v_idx, vendor in enumerate(vendor_list):
-            scores_radar = W_A[v_idx, :].tolist()
-            scores_radar += [scores_radar[0]] # Close loop
-            crit_radar = criteria_list + [criteria_list[0]]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=scores_radar,
-                theta=crit_radar,
-                fill='toself',
-                name=vendor
-            ))
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, np.max(W_A)*1.1])),
-            showlegend=True,
-            height=420,
-            margin=dict(t=30, b=30, l=40, r=40)
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-# ==========================================
-# TAB 4: ANALISIS SENSITIVITAS
-# ==========================================
-with tab4:
-    st.markdown("### 🔬 Analisis Sensitivitas (What-If Analysis)")
-    st.caption("Uji ketahanan keputusan dengan mengubah bobot kriteria secara dinamis secara real-time.")
-    
-    if len(vendor_weights_per_criteria) == len(criteria_list):
-        st.markdown("#### Simulasikan Perubahan Bobot Kriteria:")
-        
-        simulated_weights = []
-        cols = st.columns(len(criteria_list))
-        
-        for idx, crit in enumerate(criteria_list):
-            with cols[idx]:
-                w_val = st.slider(
-                    f"{crit}", 
-                    min_value=0.0, 
-                    max_value=1.0, 
-                    value=float(crit_res["weights"][idx]), 
-                    step=0.05,
-                    key=f"sim_{idx}"
+    # Form input yang lebih manusiawi (pake kolom)
+    for i in range(n):
+        for j in range(i + 1, n):
+            col1, col2 = st.columns([2, 3])
+            with col1:
+                st.write(f"**{criteria[i]}** vs **{criteria[j]}**")
+            with col2:
+                val = st.select_slider(
+                    "Skala Kepentingan",
+                    options=[9, 7, 5, 3, 1, 1/3, 1/5, 1/7, 1/9],
+                    value=1,
+                    format_func=lambda x: f"Penting {int(x)}" if x >= 1 else f"Kebalikan (1/{int(1/x)})",
+                    key=f"c_{i}_{j}"
                 )
-                simulated_weights.append(w_val)
+                c_matrix[i, j] = val
+                c_matrix[j, i] = 1 / val
+    
+    c_weights, c_cr = get_weights(c_matrix)
+    
+    # Tampilan hasil ringkas
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.markdown("#### Hasil Bobot Kriteria")
+        df_crit = pd.DataFrame({"Kriteria": criteria, "Bobot": c_weights})
+        st.dataframe(df_crit.sort_values("Bobot", ascending=False).style.format({"Bobot": "{:.2%}"}))
+    with col_b:
+        st.write("#### Cek Konsistensi")
+        if c_cr < 0.1:
+            st.success(f"Konsisten (CR = {c_cr:.2f})")
+        else:
+            st.error(f"Gak Konsisten (CR = {c_cr:.2f}). Coba atur ulang nilainya.")
+
+# --- TAB 2: VENDOR ---
+v_weights_matrix = [] # Simpan bobot tiap vendor per kriteria
+
+with tabs[1]:
+    st.subheader("Bandingkan Vendor pada masing-masing Kriteria")
+    
+    for k_idx, k_name in enumerate(criteria):
+        with st.expander(f"Berdasarkan Kriteria: {k_name}", expanded=(k_idx == 0)):
+            m_v = np.ones((len(vendors), len(vendors)))
+            for i in range(len(vendors)):
+                for j in range(i + 1, len(vendors)):
+                    val_v = st.select_slider(
+                        f"{vendors[i]} vs {vendors[j]}",
+                        options=[9, 7, 5, 3, 1, 1/3, 1/5, 1/7, 1/9],
+                        value=1,
+                        key=f"v_{k_idx}_{i}_{j}"
+                    )
+                    m_v[i, j] = val_v
+                    m_v[j, i] = 1 / val_v
+            
+            v_w, v_cr = get_weights(m_v)
+            v_weights_matrix.append(v_w)
+            st.caption(f"Konsistensi {k_name}: {v_cr:.2f}")
+
+# --- TAB 3: HASIL ---
+with tabs[2]:
+    st.header("🏁 Rekomendasi Vendor")
+    
+    if len(v_weights_matrix) == len(criteria):
+        # Hitung skor akhir (Matrix Multiplication)
+        final_scores = np.array(v_weights_matrix).T @ c_weights
         
-        total_w = sum(simulated_weights)
-        if total_w == 0:
-            total_w = 1e-10
-        norm_sim_weights = np.array(simulated_weights) / total_w
+        results = pd.DataFrame({
+            "Vendor": vendors,
+            "Skor Akhir": final_scores
+        }).sort_values("Skor Akhir", ascending=False)
         
-        # Hitung skor simulasi
-        sim_final_scores = W_A @ norm_sim_weights
+        # Visualisasi
+        fig = px.bar(results, x="Skor Akhir", y="Vendor", orientation='h', 
+                     title="Ranking Vendor", color="Skor Akhir", 
+                     color_continuous_scale="Viridis")
+        st.plotly_chart(fig, use_container_width=True)
         
-        df_sim = pd.DataFrame({
-            "Vendor": vendor_list,
-            "Skor Awal": final_scores,
-            "Skor Simulasi": sim_final_scores
-        }).sort_values(by="Skor Simulasi", ascending=False)
+        st.markdown("### Detail Skor")
+        st.table(results.style.format({"Skor Akhir": "{:.4f}"}))
         
-        fig_sim = go.Figure()
-        fig_sim.add_trace(go.Bar(name='Skor Asli AHP', x=df_sim['Vendor'], y=df_sim['Skor Awal'], marker_color='#94A3B8'))
-        fig_sim.add_trace(go.Bar(name='Skor Pasca Simulasi', x=df_sim['Vendor'], y=df_sim['Skor Simulasi'], marker_color='#0284C7'))
-        fig_sim.update_layout(barmode='group', height=360, margin=dict(t=20, b=20, l=20, r=20))
-        
-        st.plotly_chart(fig_sim, use_container_width=True)
-        st.dataframe(df_sim.style.format({"Skor Awal": "{:.4f}", "Skor Simulasi": "{:.4f}"}), use_container_width=True)
+        st.success(f"Kesimpulan: **{results.iloc[0]['Vendor']}** adalah pilihan terbaik.")
+    else:
+        st.info("Selesaikan perbandingan di Tab 1 dan 2 dulu ya.")
